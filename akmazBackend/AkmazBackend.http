@@ -1,0 +1,6 @@
+@AkmazBackend_HostAddress = http://localhost:5274
+
+GET {{AkmazBackend_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
