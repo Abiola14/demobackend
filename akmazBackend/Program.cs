@@ -6,10 +6,19 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ================= RAILWAY PORT =================
+// Use Railway's PORT environment variable.
+// Falls back to 8000 when running locally.
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
+
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+
 // ================= SERVICES =================
+
 builder.Services.AddControllers();
 
-// Database
+// ================= DATABASE =================
+
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
         builder.Configuration.GetConnectionString("DefaultConnection"),
@@ -17,47 +26,65 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     )
 );
 
-// ✅ FIXED CORS - Specific to your React app
+// ================= CORS =================
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
+        policy
+            .WithOrigins(
+                "http://localhost:5173"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
-// JWT Authentication
+// ================= JWT AUTHENTICATION =================
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.RequireHttpsMetadata = false;
         options.SaveToken = true;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = false,
             ValidateAudience = false,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes("THIS_IS_MY_SUPER_SECRET_KEY_12345"))
+                Encoding.UTF8.GetBytes(
+                    "THIS_IS_MY_SUPER_SECRET_KEY_12345"
+                )
+            )
         };
     });
 
 builder.Services.AddAuthorization();
 
+// ================= BUILD APP =================
+
 var app = builder.Build();
 
-// ================= MIDDLEWARE - IMPORTANT ORDER =================
+// ================= MIDDLEWARE =================
+
 app.UseHttpsRedirection();
 
-app.UseCors("AllowFrontend");     // ← Must be before Authentication
+app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
+
 app.UseAuthorization();
+
+// ================= CONTROLLERS =================
 
 app.MapControllers();
 
-app.Run();
+// ================= START APPLICATION =================
+
+app.Run();  
