@@ -6,13 +6,6 @@ using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ================= RAILWAY PORT =================
-// Use Railway's PORT environment variable.
-// Falls back to 8000 when running locally.
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
-
-builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
-
 // ================= SERVICES =================
 
 builder.Services.AddControllers();
@@ -33,15 +26,17 @@ builder.Services.AddCors(options =>
     options.AddPolicy("AllowFrontend", policy =>
     {
         policy
-            .AllowAnyOrigin()
+            .WithOrigins("http://localhost:5173")
             .AllowAnyHeader()
-            .AllowAnyMethod();
+            .AllowAnyMethod()
+            .AllowCredentials();
     });
 });
 
 // ================= JWT AUTHENTICATION =================
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.RequireHttpsMetadata = false;
@@ -64,13 +59,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 
 builder.Services.AddAuthorization();
 
-// ================= BUILD APP =================
+// ================= APP =================
 
 var app = builder.Build();
 
 // ================= MIDDLEWARE =================
 
-app.UseHttpsRedirection();
+// IMPORTANT: No UseHttpsRedirection for local HTTP testing
 
 app.UseCors("AllowFrontend");
 
@@ -78,10 +73,8 @@ app.UseAuthentication();
 
 app.UseAuthorization();
 
-// ================= CONTROLLERS =================
-
 app.MapControllers();
 
-// ================= START APPLICATION =================
+// ================= RUN =================
 
-app.Run();  
+app.Run();
