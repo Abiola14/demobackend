@@ -3,4 +3,4 @@ builder = "RAILPACK"
 buildCommand = "dotnet publish AkmazBackend.csproj -c Release -o out"
 
 [deploy]
-startCommand = "dotnet out/AkmazBackend.dll"
+startCommand = "./out/AkmazBackend"
