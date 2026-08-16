@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("AkmazBackend")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+f98f2d7f01ceba7197dbd96bd314e6efd13eec47")]
 [assembly: System.Reflection.AssemblyProductAttribute("AkmazBackend")]
 [assembly: System.Reflection.AssemblyTitleAttribute("AkmazBackend")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]
