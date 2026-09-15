@@ -1,4 +1,3 @@
-// Data/AppDbContext.cs
 using Microsoft.EntityFrameworkCore;
 using AkmazBackend.Models;
 
@@ -17,13 +16,15 @@ namespace AkmazBackend.Data
         public DbSet<FishInventory> tblInventory => Set<FishInventory>();
         public DbSet<BankDeposit> tblBankDeposits => Set<BankDeposit>();
         public DbSet<Expenditure> tblExpenditures => Set<Expenditure>();
-        public DbSet<AuditorAcknowledgment> tblAcknowledgments => Set<AuditorAcknowledgment>();
+        public DbSet<AuditorAcknowledgment> tblAcknowledgments =>
+            Set<AuditorAcknowledgment>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
 
-            // ── Table name mappings ──────────────────────────────────
+            // ── Table mappings ──────────────────────────────────────
+
             modelBuilder.Entity<User>()
                 .ToTable("tblUsers");
 
@@ -33,19 +34,17 @@ namespace AkmazBackend.Data
             modelBuilder.Entity<FishInventory>()
                 .ToTable("tblInventory");
 
-            // ✅ CHANGED: BankDeposits → tblBankDeposits
             modelBuilder.Entity<BankDeposit>()
                 .ToTable("tblBankDeposits");
 
-            // ✅ CHANGED: Expenditures → tblExpenditures
             modelBuilder.Entity<Expenditure>()
                 .ToTable("tblExpenditures");
 
             modelBuilder.Entity<AuditorAcknowledgment>()
                 .ToTable("tblAuditorAcknowledgments");
 
+            // ── Primary Keys ────────────────────────────────────────
 
-            // ── Primary Keys ─────────────────────────────────────────
             modelBuilder.Entity<User>()
                 .HasKey(u => u.Id);
 
@@ -64,8 +63,7 @@ namespace AkmazBackend.Data
             modelBuilder.Entity<AuditorAcknowledgment>()
                 .HasKey(a => a.Id);
 
-
-            // ── Decimal precision for MySQL ───────────────────────────
+            // ── Decimal precision ──────────────────────────────────
 
             modelBuilder.Entity<Sale>()
                 .Property(s => s.UnitPrice)
@@ -91,8 +89,7 @@ namespace AkmazBackend.Data
                 .Property(e => e.Amount)
                 .HasPrecision(18, 2);
 
-
-            // ── Default values ────────────────────────────────────────
+            // ── Default values ──────────────────────────────────────
 
             modelBuilder.Entity<Sale>()
                 .Property(s => s.SoldAt)
@@ -106,8 +103,7 @@ namespace AkmazBackend.Data
                 .Property(e => e.CreatedAt)
                 .HasDefaultValueSql("CURRENT_TIMESTAMP");
 
-
-            // ── Nullable columns ─────────────────────────────────────
+            // ── Nullable fields ────────────────────────────────────
 
             modelBuilder.Entity<BankDeposit>()
                 .Property(b => b.ConfirmedBy)
@@ -129,10 +125,8 @@ namespace AkmazBackend.Data
                 .Property(e => e.CreatedBy)
                 .IsRequired(false);
 
+            // ── AuditorAcknowledgment relationship ─────────────────
 
-            // ── Relationships ─────────────────────────────────────────
-
-            // AuditorAcknowledgment → Expenditure
             modelBuilder.Entity<AuditorAcknowledgment>()
                 .HasOne(a => a.Expenditure)
                 .WithMany(e => e.Acknowledgments)

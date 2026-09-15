@@ -1,4 +1,6 @@
 // Controllers/ExpendituresController.cs
+
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using AkmazBackend.Data;
@@ -17,7 +19,10 @@ namespace AkmazBackend.Controllers
             _context = context;
         }
 
-        // ── GET all expenditures (newest first) ───────────────────────
+        // ─────────────────────────────────────────────────────────────
+        // GET ALL EXPENDITURES
+        // Newest first
+        // ─────────────────────────────────────────────────────────────
         [HttpGet]
         public async Task<IActionResult> GetExpenditures()
         {
@@ -26,9 +31,12 @@ namespace AkmazBackend.Controllers
                 .OrderByDescending(e => e.Date)
                 .ToListAsync();
 
-            var result = expenditures.Select(e => {
+            var result = expenditures.Select(e =>
+            {
                 var ack = e.Acknowledgments.FirstOrDefault();
-                return new {
+
+                return new
+                {
                     e.Id,
                     e.Type,
                     e.Amount,
@@ -36,58 +44,109 @@ namespace AkmazBackend.Controllers
                     e.Date,
                     e.CreatedBy,
                     e.CreatedAt,
-                    isAcknowledged       = ack != null,
-                    acknowledgedBy       = ack?.AuditorName,
-                    acknowledgedAt       = ack?.AcknowledgedAt,
+
+                    // Only Approved or Rejected counts as a completed review.
+                    // Pending means the Admin has resubmitted it and Auditor
+                    // needs to review it again.
+                    isAcknowledged =
+                        ack != null &&
+                        (ack.Status == "Approved" || ack.Status == "Rejected"),
+
+                    acknowledgedBy = ack?.AuditorName,
+                    acknowledgedAt = ack?.AcknowledgedAt,
                     acknowledgmentStatus = ack?.Status,
+
+                    // This contains the rejection reason when rejected.
+                    acknowledgmentNotes = ack?.Notes
                 };
             });
 
             return Ok(result);
         }
 
-        // ── GET a single expenditure by ID ────────────────────────────
+        // ─────────────────────────────────────────────────────────────
+        // GET SINGLE EXPENDITURE
+        // ─────────────────────────────────────────────────────────────
         [HttpGet("{id}")]
         public async Task<IActionResult> GetExpenditure(int id)
         {
-            var expenditure = await _context.tblExpenditures.FindAsync(id);
+            var expenditure = await _context.tblExpenditures
+                .Include(e => e.Acknowledgments)
+                .FirstOrDefaultAsync(e => e.Id == id);
+
             if (expenditure == null)
                 return NotFound("Expenditure not found.");
+
             return Ok(expenditure);
         }
 
-        // ── ADD a new expenditure (Admin) ─────────────────────────────
+        // ─────────────────────────────────────────────────────────────
+        // ADD NEW EXPENDITURE
+        // ADMIN ONLY
+        // ─────────────────────────────────────────────────────────────
         [HttpPost("add")]
-        public async Task<IActionResult> AddExpenditure([FromBody] Expenditure expenditure)
+        public async Task<IActionResult> AddExpenditure(
+            [FromBody] Expenditure expenditure)
         {
             if (expenditure == null)
                 return BadRequest("Expenditure data is required.");
+
             if (string.IsNullOrWhiteSpace(expenditure.Type))
                 return BadRequest("Type is required.");
+
             if (expenditure.Amount <= 0)
                 return BadRequest("Amount must be greater than zero.");
+
             if (expenditure.Date == default)
                 expenditure.Date = DateTime.Now;
+
+            expenditure.Type = expenditure.Type.Trim();
+
+            if (!string.IsNullOrWhiteSpace(expenditure.Description))
+                expenditure.Description = expenditure.Description.Trim();
 
             expenditure.CreatedAt = DateTime.Now;
 
             try
             {
                 _context.tblExpenditures.Add(expenditure);
+
                 await _context.SaveChangesAsync();
+
                 return Ok(expenditure);
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Database error: {ex.Message}");
+                return StatusCode(
+                    500,
+                    $"Database error: {ex.Message}"
+                );
             }
         }
 
-        // ── EDIT a Not-Approved expenditure (Admin only) ──────────────
-        // Only allowed if acknowledgment status is "Flagged" (Not Approved)
-        // Editing resets the acknowledgment so auditor reviews again
+        // ─────────────────────────────────────────────────────────────
+        // EDIT + RESUBMIT REJECTED EXPENDITURE
+        // ADMIN ONLY
+        //
+        // When Admin edits a rejected expenditure:
+        //
+        // Rejected
+        //    ↓
+        // Admin edits
+        //    ↓
+        // Pending
+        //    ↓
+        // Auditor reviews again
+        //
+        // IMPORTANT:
+        // We do NOT delete the acknowledgment record.
+        // The previous rejection note remains available until the
+        // Auditor makes the next decision.
+        // ─────────────────────────────────────────────────────────────
         [HttpPut("edit/{id}")]
-        public async Task<IActionResult> EditExpenditure(int id, [FromBody] Expenditure updated)
+        public async Task<IActionResult> EditExpenditure(
+            int id,
+            [FromBody] Expenditure updated)
         {
             if (updated == null)
                 return BadRequest("Expenditure data is required.");
@@ -101,41 +160,98 @@ namespace AkmazBackend.Controllers
 
             var ack = expenditure.Acknowledgments.FirstOrDefault();
 
-            // Block editing if Approved or has no acknowledgment issue
+            // An expenditure must have a rejection before it can be edited.
             if (ack == null)
-                return BadRequest("Only flagged (Not Approved) expenditures can be edited.");
-            if (ack.Status != "Flagged")
-                return BadRequest("Only flagged (Not Approved) expenditures can be edited.");
+            {
+                return BadRequest(
+                    "Only rejected expenditures can be edited."
+                );
+            }
+
+            if (ack.Status != "Rejected")
+            {
+                return BadRequest(
+                    "Only rejected expenditures can be edited."
+                );
+            }
 
             if (string.IsNullOrWhiteSpace(updated.Type))
                 return BadRequest("Type is required.");
+
             if (updated.Amount <= 0)
-                return BadRequest("Amount must be greater than zero.");
+                return BadRequest(
+                    "Amount must be greater than zero."
+                );
 
-            expenditure.Type        = updated.Type.Trim();
-            expenditure.Amount      = updated.Amount;
-            expenditure.Description = updated.Description?.Trim();
-            expenditure.Date        = updated.Date == default ? expenditure.Date : updated.Date;
+            if (updated.Date == default)
+                return BadRequest("Date is required.");
 
-            // Remove old acknowledgment → resets to Pending for auditor to re-review
-            _context.tblAcknowledgments.Remove(ack);
+            expenditure.Type = updated.Type.Trim();
+
+            expenditure.Amount = updated.Amount;
+
+            expenditure.Description =
+                string.IsNullOrWhiteSpace(updated.Description)
+                    ? null
+                    : updated.Description.Trim();
+
+            expenditure.Date = updated.Date;
+
+            // ---------------------------------------------------------
+            // DO NOT DELETE THE ACKNOWLEDGMENT.
+            //
+            // Keep the rejection note so the Admin/Auditor can still
+            // see why it was rejected.
+            //
+            // Change status to Pending so the Auditor can review again.
+            // ---------------------------------------------------------
+            ack.Status = "Pending";
 
             try
             {
                 await _context.SaveChangesAsync();
-                return Ok(new { message = "Expenditure updated and reset for auditor review." });
+
+                return Ok(new
+                {
+                    message =
+                        "Expenditure updated and resubmitted for auditor review.",
+
+                    expenditureId = expenditure.Id,
+
+                    status = "Pending",
+
+                    previousRejectionNote = ack.Notes
+                });
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Update failed: {ex.Message}");
+                return StatusCode(
+                    500,
+                    $"Update failed: {ex.Message}"
+                );
             }
         }
 
-        // ── ACKNOWLEDGE an expenditure (Auditor) ──────────────────────
+        // ─────────────────────────────────────────────────────────────
+        // ACKNOWLEDGE / REVIEW EXPENDITURE
+        // AUDITOR ONLY
+        //
+        // Possible decisions:
+        //
+        // Approved
+        // Rejected
+        //
+        // Rejected MUST have a reason.
+        // ─────────────────────────────────────────────────────────────
         [HttpPut("acknowledge/{id}")]
-        public async Task<IActionResult> AcknowledgeExpenditure(int id, [FromBody] AcknowledgeExpenditureDto dto)
+        public async Task<IActionResult> AcknowledgeExpenditure(
+            int id,
+            [FromBody] AcknowledgeExpenditureDto dto)
         {
-            if (dto == null || string.IsNullOrWhiteSpace(dto.AuditorName))
+            if (dto == null)
+                return BadRequest("Acknowledgment data is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.AuditorName))
                 return BadRequest("AuditorName is required.");
 
             var expenditure = await _context.tblExpenditures
@@ -145,31 +261,113 @@ namespace AkmazBackend.Controllers
             if (expenditure == null)
                 return NotFound("Expenditure not found.");
 
-            if (expenditure.Acknowledgments.Any())
-                return BadRequest("This expenditure has already been acknowledged.");
+            var status = dto.Status?.Trim();
 
-            var validStatuses = new[] { "Approved", "Flagged" };
-            if (!validStatuses.Contains(dto.Status))
-                return BadRequest("Status must be 'Approved' or 'Flagged'.");
-
-            var ack = new AuditorAcknowledgment
+            // ---------------------------------------------------------
+            // ONLY THESE TWO DECISIONS ARE ALLOWED
+            // ---------------------------------------------------------
+            var validStatuses = new[]
             {
-                ExpenditureId  = id,
-                AuditorName    = dto.AuditorName.Trim(),
-                AuditorEmail   = dto.AuditorEmail?.Trim() ?? string.Empty,
-                Status         = dto.Status,
-                Notes          = dto.Notes?.Trim(),
-                AcknowledgedAt = DateTime.Now
+                "Approved",
+                "Rejected"
             };
+
+            if (string.IsNullOrWhiteSpace(status) ||
+                !validStatuses.Contains(status))
+            {
+                return BadRequest(
+                    "Status must be 'Approved' or 'Rejected'."
+                );
+            }
+
+            var notes = dto.Notes?.Trim();
+
+            // ---------------------------------------------------------
+            // REJECTION REQUIRES A REASON
+            // ---------------------------------------------------------
+            if (status == "Rejected" && string.IsNullOrWhiteSpace(notes))
+            {
+                return BadRequest(
+                    "A rejection reason is required when rejecting an expenditure."
+                );
+            }
+
+            var ack = expenditure.Acknowledgments.FirstOrDefault();
+
+            // ---------------------------------------------------------
+            // IF THIS EXPENDITURE HAS NEVER BEEN REVIEWED
+            // CREATE ACKNOWLEDGMENT
+            // ---------------------------------------------------------
+            if (ack == null)
+            {
+                ack = new AuditorAcknowledgment
+                {
+                    ExpenditureId = id,
+                    AuditorName = dto.AuditorName.Trim(),
+                    AuditorEmail =
+                        dto.AuditorEmail?.Trim() ?? string.Empty,
+                    Status = status,
+                    Notes = notes,
+                    AcknowledgedAt = DateTime.Now
+                };
+
+                _context.tblAcknowledgments.Add(ack);
+            }
+            else
+            {
+                // -----------------------------------------------------
+                // EXISTING ACKNOWLEDGMENT
+                //
+                // This normally happens when Admin has edited a
+                // rejected expenditure and it is now Pending.
+                //
+                // Update the same acknowledgment instead of creating
+                // a duplicate record.
+                // -----------------------------------------------------
+
+                if (ack.Status == "Approved")
+                {
+                    return BadRequest(
+                        "This expenditure has already been approved."
+                    );
+                }
+
+                if (ack.Status == "Rejected")
+                {
+                    return BadRequest(
+                        "This expenditure is already rejected and must be edited and resubmitted by the Admin first."
+                    );
+                }
+
+                if (ack.Status != "Pending")
+                {
+                    return BadRequest(
+                        "This expenditure is not available for review."
+                    );
+                }
+
+                ack.AuditorName = dto.AuditorName.Trim();
+
+                ack.AuditorEmail =
+                    dto.AuditorEmail?.Trim() ?? string.Empty;
+
+                ack.Status = status;
+
+                ack.Notes = notes;
+
+                ack.AcknowledgedAt = DateTime.Now;
+            }
 
             try
             {
-                _context.tblAcknowledgments.Add(ack);
                 await _context.SaveChangesAsync();
-                return Ok(new {
+
+                return Ok(new
+                {
                     ack.Id,
                     ack.ExpenditureId,
                     ack.AuditorName,
+                    ack.AuditorEmail,
                     ack.Status,
                     ack.Notes,
                     ack.AcknowledgedAt
@@ -177,11 +375,133 @@ namespace AkmazBackend.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Acknowledge failed: {ex.Message}");
+                return StatusCode(
+                    500,
+                    $"Acknowledge failed: {ex.Message}"
+                );
             }
         }
 
-        // ── GET all acknowledgment records (audit trail) ──────────────
+        // ─────────────────────────────────────────────────────────────
+        // SUPER ADMIN EDIT EXPENDITURE
+        // Can edit ANY expenditure regardless of status.
+        //
+        // PUT /api/expenditures/superadmin-edit/{id}
+        // ─────────────────────────────────────────────────────────────
+        [Authorize(Roles = "superadmin")]
+        [HttpPut("superadmin-edit/{id}")]
+        public async Task<IActionResult> SuperAdminEditExpenditure(
+            int id,
+            [FromBody] SuperAdminExpenditureDto dto)
+        {
+            if (dto == null)
+                return BadRequest("Expenditure data is required.");
+
+            if (string.IsNullOrWhiteSpace(dto.Type))
+                return BadRequest("Type is required.");
+
+            if (dto.Amount <= 0)
+                return BadRequest("Amount must be greater than zero.");
+
+            if (dto.Date == default)
+                return BadRequest("Date is required.");
+
+            var expenditure = await _context.tblExpenditures
+                .Include(e => e.Acknowledgments)
+                .FirstOrDefaultAsync(e => e.Id == id);
+
+            if (expenditure == null)
+                return NotFound("Expenditure not found.");
+
+            expenditure.Type = dto.Type.Trim();
+            expenditure.Amount = dto.Amount;
+
+            expenditure.Description =
+                string.IsNullOrWhiteSpace(dto.Description)
+                    ? null
+                    : dto.Description.Trim();
+
+            expenditure.Date = dto.Date;
+
+            try
+            {
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message = "Expenditure updated successfully by Super Admin.",
+                    expenditureId = expenditure.Id,
+                    expenditure.Type,
+                    expenditure.Amount,
+                    expenditure.Description,
+                    expenditure.Date
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    $"Update failed: {ex.Message}"
+                );
+            }
+        }
+
+
+        // ─────────────────────────────────────────────────────────────
+        // SUPER ADMIN DELETE EXPENDITURE
+        // Can delete ANY expenditure regardless of status.
+        //
+        // DELETE /api/expenditures/superadmin-delete/{id}
+        // ─────────────────────────────────────────────────────────────
+        [Authorize(Roles = "superadmin")]
+        [HttpDelete("superadmin-delete/{id}")]
+        public async Task<IActionResult> SuperAdminDeleteExpenditure(
+            int id)
+        {
+            var expenditure = await _context.tblExpenditures
+                .Include(e => e.Acknowledgments)
+                .FirstOrDefaultAsync(e => e.Id == id);
+
+            if (expenditure == null)
+                return NotFound("Expenditure not found.");
+
+            try
+            {
+                // Remove acknowledgment records first to avoid
+                // foreign-key constraint errors when cascade delete
+                // is not configured.
+                if (expenditure.Acknowledgments != null &&
+                    expenditure.Acknowledgments.Any())
+                {
+                    _context.tblAcknowledgments.RemoveRange(
+                        expenditure.Acknowledgments
+                    );
+                }
+
+                _context.tblExpenditures.Remove(expenditure);
+
+                await _context.SaveChangesAsync();
+
+                return Ok(new
+                {
+                    message =
+                        "Expenditure deleted successfully by Super Admin."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(
+                    500,
+                    $"Delete failed: {ex.Message}"
+                );
+            }
+        }
+
+
+        // ─────────────────────────────────────────────────────────────
+        // GET ALL ACKNOWLEDGMENT RECORDS
+        // AUDIT TRAIL
+        // ─────────────────────────────────────────────────────────────
         [HttpGet("acknowledgments")]
         public async Task<IActionResult> GetAcknowledgments()
         {
@@ -189,7 +509,8 @@ namespace AkmazBackend.Controllers
                 .OrderByDescending(a => a.AcknowledgedAt)
                 .ToListAsync();
 
-            var result = acks.Select(a => new {
+            var result = acks.Select(a => new
+            {
                 a.Id,
                 a.ExpenditureId,
                 a.AuditorName,
@@ -205,23 +526,51 @@ namespace AkmazBackend.Controllers
         }
     }
 
-    // ── DTOs ─────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // DTOs
+    // ─────────────────────────────────────────────────────────────────
 
     public class AcknowledgeExpenditureDto
     {
-        public string  AuditorName  { get; set; } = string.Empty;
+        public string AuditorName { get; set; } = string.Empty;
+
         public string? AuditorEmail { get; set; }
-        public string  Status       { get; set; } = "Approved"; // Approved | Flagged
-        public string? Notes        { get; set; }
+
+        // Approved | Rejected
+        public string Status { get; set; } = "Approved";
+
+        // Required when Status = Rejected
+        public string? Notes { get; set; }
     }
 
     public class AcknowledgeBatchDto
     {
-        public string   AuditorName  { get; set; } = string.Empty;
-        public string?  AuditorEmail { get; set; }
-        public string   Status       { get; set; } = "Approved";
-        public string?  Notes        { get; set; }
-        public DateTime PeriodFrom   { get; set; }
-        public DateTime PeriodTo     { get; set; }
+        public string AuditorName { get; set; } = string.Empty;
+
+        public string? AuditorEmail { get; set; }
+
+        // Approved | Rejected
+        public string Status { get; set; } = "Approved";
+
+        public string? Notes { get; set; }
+
+        public DateTime PeriodFrom { get; set; }
+
+        public DateTime PeriodTo { get; set; }
+    }
+
+
+    // ─────────────────────────────────────────────────────────────────
+    // DTO FOR SUPER ADMIN EDIT
+    // ─────────────────────────────────────────────────────────────────
+    public class SuperAdminExpenditureDto
+    {
+        public string Type { get; set; } = string.Empty;
+
+        public decimal Amount { get; set; }
+
+        public string? Description { get; set; }
+
+        public DateTime Date { get; set; }
     }
 }

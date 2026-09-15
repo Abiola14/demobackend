@@ -1,4 +1,3 @@
-// Models/AuditorAcknowledgment.cs
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
 
@@ -10,7 +9,8 @@ namespace AkmazBackend.Models
         [Key]
         public int Id { get; set; }
 
-        // Null = batch acknowledgment (covers a date range, not a single record)
+        // Null = batch acknowledgment
+        // Single expenditure acknowledgment uses the expenditure ID
         public int? ExpenditureId { get; set; }
 
         [ForeignKey("ExpenditureId")]
@@ -23,11 +23,17 @@ namespace AkmazBackend.Models
         [MaxLength(150)]
         public string AuditorEmail { get; set; } = string.Empty;
 
-        // "Approved" | "Flagged" | "Reviewed"
+        // Possible statuses:
+        // Pending
+        // Approved
+        // Rejected
+        // Reviewed
         [Required]
         [MaxLength(50)]
-        public string Status { get; set; } = "Reviewed";
+        public string Status { get; set; } = "Pending";
 
+        // For rejection, this contains the reason.
+        // For approval, it can contain optional comments.
         [MaxLength(500)]
         public string? Notes { get; set; }
 
@@ -35,6 +41,7 @@ namespace AkmazBackend.Models
 
         // Used for batch acknowledgments only
         public DateTime? PeriodFrom { get; set; }
-        public DateTime? PeriodTo   { get; set; }
+
+        public DateTime? PeriodTo { get; set; }
     }
 }
