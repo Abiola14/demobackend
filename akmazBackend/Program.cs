@@ -7,9 +7,11 @@ using System.Text;
 var builder = WebApplication.CreateBuilder(args);
 
 // ================= SERVICES =================
+
 builder.Services.AddControllers();
 
-// Database
+// ================= DATABASE =================
+
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
         builder.Configuration.GetConnectionString("DefaultConnection"),
@@ -17,47 +19,59 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     )
 );
 
-// ✅ FIXED CORS - Specific to your React app
+// ================= CORS =================
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("http://localhost:5173")
+        policy.SetIsOriginAllowed(_ => true)
               .AllowAnyHeader()
               .AllowAnyMethod()
               .AllowCredentials();
     });
 });
 
-// JWT Authentication
+// ================= JWT AUTHENTICATION =================
+
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         options.RequireHttpsMetadata = false;
         options.SaveToken = true;
+
         options.TokenValidationParameters = new TokenValidationParameters
         {
             ValidateIssuer = false,
             ValidateAudience = false,
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
+
             IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes("THIS_IS_MY_SUPER_SECRET_KEY_12345"))
+                Encoding.UTF8.GetBytes(
+                    "THIS_IS_MY_SUPER_SECRET_KEY_12345"
+                )
+            )
         };
     });
 
 builder.Services.AddAuthorization();
 
+// ================= BUILD APP =================
+
 var app = builder.Build();
 
-// ================= MIDDLEWARE - IMPORTANT ORDER =================
-app.UseHttpsRedirection();
+// ================= MIDDLEWARE =================
 
-app.UseCors("AllowFrontend");     // ← Must be before Authentication
+app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();
 
-app.Run("http://localhost:8000");
+// ================= RAILWAY PORT =================
+
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
+
+app.Run($"http://0.0.0.0:{port}");
