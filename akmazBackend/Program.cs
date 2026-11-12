@@ -1,3 +1,4 @@
+
 using Microsoft.EntityFrameworkCore;
 using AkmazBackend.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -25,34 +26,44 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.SetIsOriginAllowed(_ => true)
-              .AllowAnyHeader()
-              .AllowAnyMethod()
-              .AllowCredentials();
+        policy
+            .WithOrigins(
+                "https://demoakmaz.vercel.app",
+                "http://localhost:5173",
+                "http://localhost:3000"
+            )
+            .AllowAnyHeader()
+            .AllowAnyMethod();
     });
 });
 
 // ================= JWT AUTHENTICATION =================
 
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? throw new InvalidOperationException(
+        "JWT signing key is not configured."
+    );
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
-        options.RequireHttpsMetadata = false;
+        options.RequireHttpsMetadata = true;
         options.SaveToken = true;
 
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = false,
-            ValidateAudience = false,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
+        options.TokenValidationParameters =
+            new TokenValidationParameters
+            {
+                ValidateIssuer = false,
+                ValidateAudience = false,
+                ValidateLifetime = true,
+                ValidateIssuerSigningKey = true,
 
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(
-                    "THIS_IS_MY_SUPER_SECRET_KEY_12345"
-                )
-            )
-        };
+                IssuerSigningKey =
+                    new SymmetricSecurityKey(
+                        Encoding.UTF8.GetBytes(jwtKey)
+                    )
+            };
     });
 
 builder.Services.AddAuthorization();
@@ -63,15 +74,19 @@ var app = builder.Build();
 
 // ================= MIDDLEWARE =================
 
+app.UseRouting();
+
 app.UseCors("AllowFrontend");
 
 app.UseAuthentication();
+
 app.UseAuthorization();
 
 app.MapControllers();
 
 // ================= RAILWAY PORT =================
 
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
+var port = Environment.GetEnvironmentVariable("PORT")
+    ?? "8000";
 
 app.Run($"http://0.0.0.0:{port}");
