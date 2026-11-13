@@ -1,15 +1,20 @@
+
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+
 using AkmazBackend.Data;
 using AkmazBackend.Models;
-using BCrypt.Net;
-using System.Net.Mail;
-using System.Net;
+
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Net;
+using System.Net.Mail;
 using System.Text;
+
+using BCrypt.Net;
 
 namespace AkmazBackend.Controllers
 {
@@ -18,20 +23,20 @@ namespace AkmazBackend.Controllers
     public class UserController : ControllerBase
     {
         private readonly AppDbContext _context;
+        private readonly IConfiguration _configuration;
+        private readonly string _jwtKey;
 
-        private const string JWT_SECRET =
-            "THIS_IS_MY_SUPER_SECRET_KEY_12345";
-
-        // ============================================================
-        // BUILT-IN SUPER ADMIN
-        // ============================================================
-
-        private const string SUPER_ADMIN_USERNAME = "admin";
-        private const string SUPER_ADMIN_PASSWORD = "admin123";
-
-        public UserController(AppDbContext context)
+        public UserController(
+            AppDbContext context,
+            IConfiguration configuration)
         {
             _context = context;
+            _configuration = configuration;
+
+            _jwtKey = configuration["Jwt:Key"]
+                ?? throw new InvalidOperationException(
+                    "JWT signing key is not configured."
+                );
         }
 
         // ============================================================
@@ -54,9 +59,11 @@ namespace AkmazBackend.Controllers
             if (string.IsNullOrWhiteSpace(model.Password))
                 return BadRequest("Password is required.");
 
-            // Built-in Super Admin username is reserved
-            if (model.Username.Trim().Equals(
-                SUPER_ADMIN_USERNAME,
+            var username = model.Username.Trim();
+            var email = model.Email.Trim();
+
+            if (username.Equals(
+                "admin",
                 StringComparison.OrdinalIgnoreCase))
             {
                 return BadRequest(
@@ -64,32 +71,25 @@ namespace AkmazBackend.Controllers
                 );
             }
 
-            if (_context.tblUsers.Any(
-                u => u.Username.ToLower() == model.Username.ToLower()))
-            {
+            var usernameExists = await _context.tblUsers
+                .AnyAsync(u => u.Username.ToLower() == username.ToLower());
+
+            if (usernameExists)
                 return BadRequest("Username already exists.");
-            }
 
-            if (_context.tblUsers.Any(
-                u => u.Email.ToLower() == model.Email.ToLower()))
-            {
+            var emailExists = await _context.tblUsers
+                .AnyAsync(u => u.Email.ToLower() == email.ToLower());
+
+            if (emailExists)
                 return BadRequest("Email already exists.");
-            }
 
-            // Public registration can NEVER create Super Admin.
-            var role = model.Role?.Trim().ToLower();
-
-            if (role != "admin" && role != "auditor")
-            {
-                role = "auditor";
-            }
-
+            // Public registration is always Auditor.
             var user = new User
             {
-                Username = model.Username.Trim(),
-                Email = model.Email.Trim(),
+                Username = username,
+                Email = email,
                 Password = BCrypt.Net.BCrypt.HashPassword(model.Password),
-                Role = role,
+                Role = "auditor",
                 IsTemporaryPassword = false,
                 IsActive = true
             };
@@ -109,7 +109,8 @@ namespace AkmazBackend.Controllers
         // ============================================================
 
         [HttpPost("login")]
-        public IActionResult Login([FromBody] LoginRequest model)
+        public async Task<IActionResult> Login(
+            [FromBody] LoginRequest model)
         {
             if (model == null ||
                 string.IsNullOrWhiteSpace(model.Username) ||
@@ -118,39 +119,44 @@ namespace AkmazBackend.Controllers
                 return Unauthorized("Invalid username or password.");
             }
 
-            // ========================================================
-            // BUILT-IN SUPER ADMIN LOGIN
-            // ========================================================
+            var username = model.Username.Trim();
+
+            // BUILT-IN SUPER ADMIN
+
+            var superAdminUsername =
+                _configuration["SuperAdmin:Username"];
+
+            var superAdminPassword =
+                _configuration["SuperAdmin:Password"];
 
             if (
-                model.Username.Trim().Equals(
-                    SUPER_ADMIN_USERNAME,
+                !string.IsNullOrWhiteSpace(superAdminUsername) &&
+                !string.IsNullOrWhiteSpace(superAdminPassword) &&
+                username.Equals(
+                    superAdminUsername,
                     StringComparison.OrdinalIgnoreCase
-                )
-                &&
-                model.Password == SUPER_ADMIN_PASSWORD
+                ) &&
+                model.Password == superAdminPassword
             )
             {
                 var superAdminToken = GenerateJwtToken(
-                    SUPER_ADMIN_USERNAME,
+                    superAdminUsername,
                     "superadmin"
                 );
 
                 return Ok(new
                 {
                     token = superAdminToken,
-                    username = SUPER_ADMIN_USERNAME,
+                    username = superAdminUsername,
                     role = "superadmin"
                 });
             }
 
-            // ========================================================
-            // NORMAL DATABASE USER LOGIN
-            // ========================================================
+            // NORMAL DATABASE USER
 
-            var user = _context.tblUsers
-                .FirstOrDefault(u =>
-                    u.Username == model.Username);
+            var user = await _context.tblUsers
+                .FirstOrDefaultAsync(u =>
+                    u.Username.ToLower() == username.ToLower());
 
             if (user == null ||
                 !BCrypt.Net.BCrypt.Verify(
@@ -169,7 +175,7 @@ namespace AkmazBackend.Controllers
                 );
             }
 
-            var role = (user.Role ?? "user")
+            var role = (user.Role ?? "auditor")
                 .Trim()
                 .ToLower();
 
@@ -196,15 +202,9 @@ namespace AkmazBackend.Controllers
         {
             var claims = new[]
             {
-                new Claim(
-                    ClaimTypes.Name,
-                    username
-                ),
+                new Claim(ClaimTypes.Name, username),
 
-                new Claim(
-                    ClaimTypes.Role,
-                    role
-                ),
+                new Claim(ClaimTypes.Role, role),
 
                 new Claim(
                     JwtRegisteredClaimNames.Sub,
@@ -218,10 +218,10 @@ namespace AkmazBackend.Controllers
             };
 
             var key = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(JWT_SECRET)
+                Encoding.UTF8.GetBytes(_jwtKey)
             );
 
-            var creds = new SigningCredentials(
+            var credentials = new SigningCredentials(
                 key,
                 SecurityAlgorithms.HmacSha256
             );
@@ -229,7 +229,7 @@ namespace AkmazBackend.Controllers
             var token = new JwtSecurityToken(
                 claims: claims,
                 expires: DateTime.UtcNow.AddHours(8),
-                signingCredentials: creds
+                signingCredentials: credentials
             );
 
             return new JwtSecurityTokenHandler()
@@ -237,7 +237,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — LIST USERS
+        // SUPER ADMIN - LIST USERS
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -262,7 +262,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — CREATE USER
+        // SUPER ADMIN - CREATE USER
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -282,9 +282,11 @@ namespace AkmazBackend.Controllers
             if (string.IsNullOrWhiteSpace(model.Password))
                 return BadRequest("Password is required.");
 
-            // Built-in Super Admin username is reserved
-            if (model.Username.Trim().Equals(
-                SUPER_ADMIN_USERNAME,
+            var username = model.Username.Trim();
+            var email = model.Email.Trim();
+
+            if (username.Equals(
+                "admin",
                 StringComparison.OrdinalIgnoreCase))
             {
                 return BadRequest(
@@ -297,31 +299,28 @@ namespace AkmazBackend.Controllers
             var validRoles = new[]
             {
                 "admin",
-                "auditor",
-                "superadmin"
+                "auditor"
             };
 
-            if (!validRoles.Contains(role))
+            if (role == null || !validRoles.Contains(role))
                 return BadRequest("Invalid role.");
 
-            if (_context.tblUsers.Any(
-                u => u.Username.ToLower() ==
-                     model.Username.ToLower()))
-            {
-                return BadRequest("Username already exists.");
-            }
+            var usernameExists = await _context.tblUsers
+                .AnyAsync(u => u.Username.ToLower() == username.ToLower());
 
-            if (_context.tblUsers.Any(
-                u => u.Email.ToLower() ==
-                     model.Email.ToLower()))
-            {
+            if (usernameExists)
+                return BadRequest("Username already exists.");
+
+            var emailExists = await _context.tblUsers
+                .AnyAsync(u => u.Email.ToLower() == email.ToLower());
+
+            if (emailExists)
                 return BadRequest("Email already exists.");
-            }
 
             var user = new User
             {
-                Username = model.Username.Trim(),
-                Email = model.Email.Trim(),
+                Username = username,
+                Email = email,
                 Password = BCrypt.Net.BCrypt.HashPassword(
                     model.Password
                 ),
@@ -342,7 +341,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — CHANGE ROLE
+        // SUPER ADMIN - CHANGE ROLE
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -351,6 +350,9 @@ namespace AkmazBackend.Controllers
             int id,
             [FromBody] ChangeRoleRequest model)
         {
+            if (model == null)
+                return BadRequest("Role is required.");
+
             var user = await _context.tblUsers.FindAsync(id);
 
             if (user == null)
@@ -361,24 +363,19 @@ namespace AkmazBackend.Controllers
             var validRoles = new[]
             {
                 "admin",
-                "auditor",
-                "superadmin"
+                "auditor"
             };
 
-            if (!validRoles.Contains(role))
+            if (role == null || !validRoles.Contains(role))
                 return BadRequest("Invalid role.");
 
-            // Prevent Super Admin from accidentally removing
-            // their own Super Admin role.
-            var currentUsername =
-                User.Identity?.Name;
+            var currentUsername = User.Identity?.Name;
 
             if (
                 user.Username.Equals(
                     currentUsername,
                     StringComparison.OrdinalIgnoreCase
-                )
-                &&
+                ) &&
                 role != "superadmin"
             )
             {
@@ -398,7 +395,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — ACTIVATE / DEACTIVATE USER
+        // SUPER ADMIN - ACTIVATE / DEACTIVATE USER
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -410,8 +407,7 @@ namespace AkmazBackend.Controllers
             if (user == null)
                 return NotFound("User not found.");
 
-            var currentUsername =
-                User.Identity?.Name;
+            var currentUsername = User.Identity?.Name;
 
             if (
                 user.Username.Equals(
@@ -440,7 +436,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — DELETE USER
+        // SUPER ADMIN - DELETE USER
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -452,8 +448,7 @@ namespace AkmazBackend.Controllers
             if (user == null)
                 return NotFound("User not found.");
 
-            var currentUsername =
-                User.Identity?.Name;
+            var currentUsername = User.Identity?.Name;
 
             if (
                 user.Username.Equals(
@@ -478,7 +473,7 @@ namespace AkmazBackend.Controllers
         }
 
         // ============================================================
-        // SUPER ADMIN — RESET PASSWORD
+        // SUPER ADMIN - RESET PASSWORD
         // ============================================================
 
         [Authorize(Roles = "superadmin")]
@@ -486,6 +481,15 @@ namespace AkmazBackend.Controllers
         public async Task<IActionResult> AdminResetPassword(
             [FromBody] AdminResetPasswordRequest model)
         {
+            if (model == null ||
+                string.IsNullOrWhiteSpace(model.Username) ||
+                string.IsNullOrWhiteSpace(model.NewPassword))
+            {
+                return BadRequest(
+                    "Username and new password are required."
+                );
+            }
+
             var user = await _context.tblUsers
                 .FirstOrDefaultAsync(
                     u => u.Username == model.Username
@@ -493,14 +497,6 @@ namespace AkmazBackend.Controllers
 
             if (user == null)
                 return NotFound("User not found.");
-
-            if (string.IsNullOrWhiteSpace(
-                model.NewPassword))
-            {
-                return BadRequest(
-                    "New password is required."
-                );
-            }
 
             user.Password =
                 BCrypt.Net.BCrypt.HashPassword(
@@ -513,8 +509,7 @@ namespace AkmazBackend.Controllers
 
             return Ok(new
             {
-                message =
-                    "Password reset successfully."
+                message = "Password reset successfully."
             });
         }
 
@@ -526,32 +521,33 @@ namespace AkmazBackend.Controllers
         public async Task<IActionResult> RequestOtp(
             [FromBody] EmailRequest model)
         {
-            var user = _context.tblUsers
-                .FirstOrDefault(
-                    u => u.Email == model.Email
+            if (model == null ||
+                string.IsNullOrWhiteSpace(model.Email))
+            {
+                return BadRequest("Email is required.");
+            }
+
+            var email = model.Email.Trim();
+
+            var user = await _context.tblUsers
+                .FirstOrDefaultAsync(
+                    u => u.Email.ToLower() == email.ToLower()
                 );
 
             if (user == null)
             {
-                return Ok(
-                    new
-                    {
-                        message =
-                            "If email exists, OTP sent."
-                    }
-                );
+                return Ok(new
+                {
+                    message = "If email exists, OTP sent."
+                });
             }
 
-            var otp =
-                new Random()
-                    .Next(100000, 999999)
-                    .ToString();
+            var otp = RandomNumberGenerator
+                .GetInt32(100000, 1000000)
+                .ToString();
 
             user.OtpCode = otp;
-
-            user.OtpExpiry =
-                DateTime.UtcNow.AddMinutes(10);
-
+            user.OtpExpiry = DateTime.UtcNow.AddMinutes(10);
             user.OtpAttempts = 0;
 
             await _context.SaveChangesAsync();
@@ -564,25 +560,21 @@ namespace AkmazBackend.Controllers
                     otp
                 );
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return StatusCode(
                     500,
                     new
                     {
-                        error = "Failed to send email",
-                        details = ex.Message
+                        error = "Failed to send OTP email."
                     }
                 );
             }
 
-            return Ok(
-                new
-                {
-                    message =
-                        "OTP sent to your email!"
-                }
-            );
+            return Ok(new
+            {
+                message = "OTP sent to your email!"
+            });
         }
 
         // ============================================================
@@ -593,16 +585,32 @@ namespace AkmazBackend.Controllers
         public async Task<IActionResult> VerifyOtp(
             [FromBody] VerifyOtpRequest model)
         {
-            var user = _context.tblUsers
-                .FirstOrDefault(
+            if (model == null ||
+                string.IsNullOrWhiteSpace(model.Email) ||
+                string.IsNullOrWhiteSpace(model.Otp))
+            {
+                return BadRequest("Email and OTP are required.");
+            }
+
+            var user = await _context.tblUsers
+                .FirstOrDefaultAsync(
                     u => u.Email == model.Email
                 );
 
             if (user == null)
-                return BadRequest("Email not found");
+                return BadRequest("Email not found.");
 
             if (user.OtpAttempts >= 5)
                 return BadRequest("Too many attempts.");
+
+            if (user.OtpExpiry == null ||
+                user.OtpExpiry < DateTime.UtcNow)
+            {
+                user.OtpCode = null;
+                await _context.SaveChangesAsync();
+
+                return BadRequest("OTP expired.");
+            }
 
             if (user.OtpCode != model.Otp)
             {
@@ -610,50 +618,55 @@ namespace AkmazBackend.Controllers
 
                 await _context.SaveChangesAsync();
 
-                return BadRequest("Invalid OTP");
+                return BadRequest("Invalid OTP.");
             }
 
-            if (user.OtpExpiry < DateTime.UtcNow)
+            return Ok(new
             {
-                user.OtpCode = null;
-
-                await _context.SaveChangesAsync();
-
-                return BadRequest("OTP expired");
-            }
-
-            return Ok(
-                new
-                {
-                    message = "OTP verified"
-                }
-            );
+                message = "OTP verified."
+            });
         }
 
         // ============================================================
-        // RESET PASSWORD
+        // RESET PASSWORD USING OTP
         // ============================================================
 
         [HttpPost("reset-password-otp")]
         public async Task<IActionResult> ResetPasswordOtp(
             [FromBody] ResetPasswordOtpRequest model)
         {
-            var user = _context.tblUsers
-                .FirstOrDefault(
+            if (model == null ||
+                string.IsNullOrWhiteSpace(model.Email) ||
+                string.IsNullOrWhiteSpace(model.Otp) ||
+                string.IsNullOrWhiteSpace(model.NewPassword))
+            {
+                return BadRequest(
+                    "Email, OTP and new password are required."
+                );
+            }
+
+            var user = await _context.tblUsers
+                .FirstOrDefaultAsync(
                     u => u.Email == model.Email
                 );
 
             if (user == null)
-                return BadRequest("Email not found");
+                return BadRequest("Email not found.");
+
+            if (user.OtpAttempts >= 5)
+                return BadRequest("Too many attempts.");
 
             if (
                 user.OtpCode != model.Otp ||
+                user.OtpExpiry == null ||
                 user.OtpExpiry < DateTime.UtcNow
             )
             {
-                return BadRequest(
-                    "Invalid or expired OTP"
-                );
+                user.OtpAttempts++;
+
+                await _context.SaveChangesAsync();
+
+                return BadRequest("Invalid or expired OTP.");
             }
 
             user.Password =
@@ -668,19 +681,15 @@ namespace AkmazBackend.Controllers
 
             await _context.SaveChangesAsync();
 
-            return Ok(
-                new
-                {
-                    message =
-                        "Password reset successful",
-
-                    role = user.Role
-                }
-            );
+            return Ok(new
+            {
+                message = "Password reset successful.",
+                role = user.Role
+            });
         }
 
         // ============================================================
-        // EMAIL
+        // SEND OTP EMAIL
         // ============================================================
 
         private async Task SendOtpEmailAsync(
@@ -688,61 +697,50 @@ namespace AkmazBackend.Controllers
             string username,
             string otp)
         {
-            var fromEmail =
-                "abiolalingard200@gmail.com";
+            var fromEmail = _configuration["Smtp:Email"];
+            var appPassword = _configuration["Smtp:AppPassword"];
 
-            var appPassword =
-                "qisd oalz xlmm yyqa";
-
-            var message = new MailMessage();
-
-            message.From =
-                new MailAddress(
-                    fromEmail,
-                    "Akmaz App"
+            if (
+                string.IsNullOrWhiteSpace(fromEmail) ||
+                string.IsNullOrWhiteSpace(appPassword)
+            )
+            {
+                throw new InvalidOperationException(
+                    "SMTP credentials are not configured."
                 );
+            }
+
+            using var message = new MailMessage();
+
+            message.From = new MailAddress(
+                fromEmail,
+                "Akmaz App"
+            );
 
             message.To.Add(toEmail);
 
-            message.Subject =
-                "Your Password Reset OTP - Akmaz";
+            message.Subject = "Your Password Reset OTP - Akmaz";
 
             message.IsBodyHtml = true;
 
             message.Body = $@"
                 <div style='font-family:Arial'>
-
                     <h2>Akmaz Password Reset</h2>
-
-                    <p>
-                        Hi <strong>{username}</strong>,
-                    </p>
-
-                    <p>
-                        Your password reset OTP is:
-                    </p>
-
+                    <p>Hi <strong>{WebUtility.HtmlEncode(username)}</strong>,</p>
+                    <p>Your password reset OTP is:</p>
                     <h1>{otp}</h1>
-
-                    <p>
-                        This OTP expires in 10 minutes.
-                    </p>
-
+                    <p>This OTP expires in 10 minutes.</p>
                 </div>";
 
-            using var client =
-                new SmtpClient("smtp.gmail.com")
-                {
-                    Port = 587,
-
-                    Credentials =
-                        new NetworkCredential(
-                            fromEmail,
-                            appPassword
-                        ),
-
-                    EnableSsl = true
-                };
+            using var client = new SmtpClient("smtp.gmail.com")
+            {
+                Port = 587,
+                Credentials = new NetworkCredential(
+                    fromEmail,
+                    appPassword
+                ),
+                EnableSsl = true
+            };
 
             await client.SendMailAsync(message);
         }

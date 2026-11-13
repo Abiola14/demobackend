@@ -13,9 +13,15 @@ builder.Services.AddControllers();
 
 // ================= DATABASE =================
 
+var connectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException(
+        "DefaultConnection is not configured."
+    );
+
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
-        builder.Configuration.GetConnectionString("DefaultConnection"),
+        connectionString,
         new MySqlServerVersion(new Version(8, 0, 33))
     )
 );
@@ -43,6 +49,13 @@ var jwtKey = builder.Configuration["Jwt:Key"]
     ?? throw new InvalidOperationException(
         "JWT signing key is not configured."
     );
+
+if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
+{
+    throw new InvalidOperationException(
+        "JWT signing key must be at least 32 bytes."
+    );
+}
 
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -86,7 +99,6 @@ app.MapControllers();
 
 // ================= RAILWAY PORT =================
 
-var port = Environment.GetEnvironmentVariable("PORT")
-    ?? "8000";
+var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
 
 app.Run($"http://0.0.0.0:{port}");
