@@ -3,21 +3,57 @@ using Microsoft.EntityFrameworkCore;
 using AkmazBackend.Data;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
+using MySqlConnector;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ================= SERVICES =================
+// ==================================================
+// 1. SERVICES
+// ==================================================
 
 builder.Services.AddControllers();
 
-// ================= DATABASE =================
+// ==================================================
+// 2. MYSQL DATABASE CONFIGURATION (RAILWAY)
+// ==================================================
 
-var connectionString =
-    builder.Configuration.GetConnectionString("DefaultConnection")
-    ?? throw new InvalidOperationException(
-        "DefaultConnection is not configured."
+var host = builder.Configuration["MYSQLHOST"];
+var port = builder.Configuration["MYSQLPORT"];
+var user = builder.Configuration["MYSQLUSER"];
+var password = builder.Configuration["MYSQLPASSWORD"];
+var database = builder.Configuration["MYSQLDATABASE"];
+
+if (string.IsNullOrWhiteSpace(host) ||
+    string.IsNullOrWhiteSpace(port) ||
+    string.IsNullOrWhiteSpace(user) ||
+    string.IsNullOrWhiteSpace(password) ||
+    string.IsNullOrWhiteSpace(database))
+{
+    throw new InvalidOperationException(
+        "Railway MySQL variables are missing. Check MYSQLHOST, MYSQLPORT, MYSQLUSER, MYSQLPASSWORD and MYSQLDATABASE."
     );
+}
+
+if (!uint.TryParse(port, out var mysqlPort))
+{
+    throw new InvalidOperationException(
+        "MYSQLPORT must be a valid port number."
+    );
+}
+
+var mysqlConnection = new MySqlConnectionStringBuilder
+{
+    Server = host,
+    Port = mysqlPort,
+    UserID = user,
+    Password = password,
+    Database = database,
+    SslMode = MySqlSslMode.Preferred,
+    ConnectionTimeout = 30
+};
+
+var connectionString = mysqlConnection.ConnectionString;
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseMySql(
@@ -26,7 +62,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
     )
 );
 
-// ================= CORS =================
+// ==================================================
+// 3. CORS CONFIGURATION
+// ==================================================
 
 builder.Services.AddCors(options =>
 {
@@ -43,12 +81,18 @@ builder.Services.AddCors(options =>
     });
 });
 
-// ================= JWT AUTHENTICATION =================
+// ==================================================
+// 4. JWT AUTHENTICATION
+// ==================================================
 
-var jwtKey = builder.Configuration["Jwt:Key"]
-    ?? throw new InvalidOperationException(
-        "JWT signing key is not configured."
+var jwtKey = builder.Configuration["Jwt:Key"];
+
+if (string.IsNullOrWhiteSpace(jwtKey))
+{
+    throw new InvalidOperationException(
+        "JWT signing key is missing. Configure Jwt__Key in Railway."
     );
+}
 
 if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
 {
@@ -72,20 +116,23 @@ builder.Services
                 ValidateLifetime = true,
                 ValidateIssuerSigningKey = true,
 
-                IssuerSigningKey =
-                    new SymmetricSecurityKey(
-                        Encoding.UTF8.GetBytes(jwtKey)
-                    )
+                IssuerSigningKey = new SymmetricSecurityKey(
+                    Encoding.UTF8.GetBytes(jwtKey)
+                )
             };
     });
 
 builder.Services.AddAuthorization();
 
-// ================= BUILD APP =================
+// ==================================================
+// 5. BUILD APPLICATION
+// ==================================================
 
 var app = builder.Build();
 
-// ================= MIDDLEWARE =================
+// ==================================================
+// 6. MIDDLEWARE
+// ==================================================
 
 app.UseRouting();
 
@@ -95,10 +142,24 @@ app.UseAuthentication();
 
 app.UseAuthorization();
 
+// ==================================================
+// 7. HEALTH CHECK
+// ==================================================
+
+app.MapGet("/", () => Results.Ok(new
+{
+    status = "Online",
+    application = "Akmaz Backend",
+    message = "API is running successfully"
+}));
+
 app.MapControllers();
 
-// ================= RAILWAY PORT =================
+// ==================================================
+// 8. RAILWAY PORT
+// ==================================================
 
-var port = Environment.GetEnvironmentVariable("PORT") ?? "8000";
+var railwayPort =
+    Environment.GetEnvironmentVariable("PORT") ?? "8080";
 
-app.Run($"http://0.0.0.0:{port}");
+app.Run($"http://0.0.0.0:{railwayPort}");
